@@ -9,6 +9,22 @@ is unchanged. The Cargo patch applies to apkeep and its transitive gpapi user
 without editing the registry cache. Existing public methods and the
 `sha256sum` feature are retained.
 
+## Rereview transport follow-up
+
+The default `AsyncDownload` client requires public HTTPS for the initial request
+and all redirect targets. `public_https_client_builder` and
+`validate_public_https_url` expose the same policy for direct callers. The
+HTTP(S) builder remains available for authenticated-digest callers such as
+F-Droid/Huawei. Explicit `with_client` callers own their transport policy; this
+is not a production environment bypass. HTTPS preserves confidentiality/in-flight
+integrity but does not establish publisher trust.
+
+Transfer setup retains its typed boxed request error instead of collapsing it
+into `InvalidResponse`. Empty/length-invalid and SHA256-mismatched completed
+bodies return `IO(InvalidData)`; body-stream errors retain reqwest's typed source
+for the parent to distinguish incomplete payload integrity from timeout or
+request transport failures. `src/error.rs` and its exhaustive enum are unchanged.
+
 ## Transfer contract
 
 - `new`, consuming `get`, `length`, `download`, and

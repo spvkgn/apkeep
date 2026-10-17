@@ -70,13 +70,14 @@ pub struct Report {
 }
 
 fn safe_package(value: &str) -> bool {
-    value.len() <= 255
-        && value.contains('.')
-        && value.split('.').all(|part| {
-            !part.is_empty()
-                && part.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
-                && !part.as_bytes()[0].is_ascii_digit()
-        })
+    // Safe serialization envelope, not Android/store semantic validation.
+    // F-Droid permits nonstandard IDs; each source records InvalidInput itself.
+    !value.is_empty()
+        && value.len() <= 255
+        && !matches!(value, "." | "..")
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-' | b'+'))
 }
 fn safe_version(value: &str) -> bool {
     !value.is_empty()
@@ -128,6 +129,17 @@ impl Report {
         self.succeeded = succeeded
             && !self.items.is_empty()
             && self.items.iter().all(|item| item.status == Status::Success);
+    }
+    /// A failed operational sink invalidates delivered success/availability,
+    /// but does not erase an already-known provider error or invalid-input redaction.
+    pub fn output_failed(&mut self) {
+        self.succeeded = false;
+        for item in &mut self.items {
+            if item.status != Status::Error || item.reason == Reason::Unperformed {
+                item.status = Status::Error;
+                item.reason = Reason::LocalIo;
+            }
+        }
     }
     pub fn succeeded(&self) -> bool {
         self.succeeded
@@ -208,9 +220,17 @@ pub fn error<T>(value: T, reason: Reason) -> T {
 }
 
 pub fn failure_reason(error: &(dyn std::error::Error + 'static)) -> Reason {
+    typed_failure_reason(error).unwrap_or(Reason::Integrity)
+}
+
+// Unknown message errors are not evidence of integrity failure inside an I/O
+// wrapper. Keep the outer kind's fallback, while preserving recognized types.
+fn typed_failure_reason(error: &(dyn std::error::Error + 'static)) -> Option<Reason> {
     if let Some(error) = error.downcast_ref::<reqwest::Error>() {
-        return if error.is_timeout() {
+        return Some(if error.is_timeout() {
             Reason::Timeout
+        } else if error.is_body() || error.is_decode() {
+            Reason::Integrity
         } else if error
             .status()
             .is_some_and(|s| matches!(s.as_u16(), 401 | 403))
@@ -218,25 +238,35 @@ pub fn failure_reason(error: &(dyn std::error::Error + 'static)) -> Reason {
             Reason::Authentication
         } else {
             Reason::Transport
-        };
+        });
     }
     if error.is::<tokio::time::error::Elapsed>() {
-        return Reason::Timeout;
+        return Some(Reason::Timeout);
     }
     if let Some(error) = error.downcast_ref::<TransferFailure>() {
-        return error.0;
+        return Some(error.0);
     }
     if let Some(error) = error.downcast_ref::<std::io::Error>() {
-        if let Some(inner) = error.get_ref() {
-            return failure_reason(inner);
+        use std::io::ErrorKind;
+        // Explicit adapter deadlines and local permission failures are decisive,
+        // even if a different typed error was attached as their context.
+        match error.kind() {
+            ErrorKind::TimedOut => return Some(Reason::Timeout),
+            ErrorKind::PermissionDenied => return Some(Reason::LocalIo),
+            _ => {}
         }
-        return match error.kind() {
-            std::io::ErrorKind::TimedOut => Reason::Timeout,
-            std::io::ErrorKind::InvalidData => Reason::Integrity,
-            _ => Reason::LocalIo,
-        };
+        return Some(
+            error
+                .get_ref()
+                .and_then(|inner| typed_failure_reason(inner))
+                .unwrap_or(if error.kind() == ErrorKind::InvalidData {
+                    Reason::Integrity
+                } else {
+                    Reason::LocalIo
+                }),
+        );
     }
-    Reason::Integrity
+    None
 }
 
 #[derive(Debug)]

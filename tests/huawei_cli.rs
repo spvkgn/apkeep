@@ -165,7 +165,7 @@ fn empty_lists_zero_parallelism_and_invalid_csv_fields_report_stderr() {
         .output()
         .unwrap();
     assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("parallel >= 1"));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("parallel must be between 1 and 16"));
 }
 
 #[test]

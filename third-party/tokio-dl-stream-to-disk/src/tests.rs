@@ -1,4 +1,83 @@
 use super::*;
+
+#[tokio::test]
+async fn production_https_builder_rejects_initial_http_without_target_io() {
+    let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = target.local_addr().unwrap();
+    let url = reqwest::Url::parse(&format!(
+        "http://artifact.fixture.invalid:{}/file",
+        address.port()
+    ))
+    .unwrap();
+    assert!(validate_public_https_url(&url).is_err());
+    // Only the DNS destination is a fixture override. This is the actual
+    // production HTTPS-only builder, not the with_client transfer seam.
+    let client = public_https_client_builder()
+        .resolve("artifact.fixture.invalid", address)
+        .build()
+        .unwrap();
+    assert!(client.get(url).send().await.is_err());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), target.accept())
+            .await
+            .is_err()
+    );
+    assert!(
+        validate_public_https_url(&reqwest::Url::parse("https://example.org/file").unwrap())
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn digestless_default_rejects_initial_cleartext_before_io() {
+    let out = tempfile::tempdir().unwrap();
+    let mut download =
+        AsyncDownload::new("http://example.org:12345/artifact", out.path(), "app.apk");
+    assert!(
+        download.download(&None).await.is_err(),
+        "default artifact transfer must refuse HTTP"
+    );
+    assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0);
+}
+
+#[tokio::test]
+async fn https_builder_rejects_cleartext_redirect_targets_before_io() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let source = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = source.local_addr().unwrap();
+    let target_address = target.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = source.accept().await.unwrap();
+        let mut request = [0; 4096];
+        assert!(socket.read(&mut request).await.unwrap() > 0);
+        socket.write_all(format!("HTTP/1.1 302 Found\r\nLocation: http://target.fixture.invalid:{}/apk\r\nContent-Length: 0\r\n\r\n", target_address.port()).as_bytes()).await.unwrap();
+    });
+    // Exercise exact HTTPS redirect policy over a trusted plaintext source seam;
+    // TLS itself is not tested here. The production builder also uses https_only.
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(crate::network::https_redirect_policy())
+        .resolve("target.fixture.invalid", target_address)
+        .build()
+        .unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_millis(100),
+        client.get(format!("http://{address}/source")).send(),
+    )
+    .await;
+    assert!(
+        matches!(result, Ok(Err(ref e)) if e.is_redirect()),
+        "cleartext redirect accepted or attempted target IO: {result:?}"
+    );
+    server.await.unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), target.accept())
+            .await
+            .is_err()
+    );
+}
+
 use std::time::Duration;
 use tokio::net::TcpListener;
 

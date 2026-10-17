@@ -1,6 +1,166 @@
 use super::*;
 
 #[tokio::test]
+async fn failed_stdout_revokes_success_without_erasing_known_provider_errors() {
+    let (_, mut report) = collect(
+        Report::new("ru-store", "download", requests()).unwrap(),
+        async {
+            record("com.example.one", None, Status::Success, Reason::Complete);
+            record(
+                "com.example.two",
+                Some("2.0"),
+                Status::Error,
+                Reason::Timeout,
+            );
+        },
+    )
+    .await;
+    report.output_failed();
+    report.finish(true);
+    assert!(!report.succeeded());
+    let value = json(&report);
+    assert_eq!(value["success"], false);
+    assert_eq!(value["results"][0]["status"], "error");
+    assert_eq!(value["results"][0]["reason"], "local_io");
+    assert_eq!(value["results"][1]["reason"], "timeout");
+}
+
+#[test]
+fn message_bearing_io_errors_retain_outer_kind() {
+    use std::io::{Error, ErrorKind};
+    for (kind, expected) in [
+        (ErrorKind::TimedOut, Reason::Timeout),
+        (ErrorKind::PermissionDenied, Reason::LocalIo),
+        (ErrorKind::Other, Reason::LocalIo),
+        (ErrorKind::InvalidData, Reason::Integrity),
+    ] {
+        assert_eq!(
+            failure_reason(&Error::new(kind, "an untyped message, not a category")),
+            expected,
+            "{kind:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn typed_reqwest_nested_in_io_stays_classifiable_but_outer_timeout_wins() {
+    use std::io::{Error, ErrorKind};
+    for (outer, expected) in [
+        (ErrorKind::Other, Reason::Transport),
+        (ErrorKind::TimedOut, Reason::Timeout),
+        (ErrorKind::PermissionDenied, Reason::LocalIo),
+    ] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        // Keep the bound socket, so refusal cannot be confused with another server.
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0; 4096];
+            assert!(stream.read(&mut buf).await.unwrap() > 0);
+            stream
+                .write_all(b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let error = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(url)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap_err();
+        server.await.unwrap();
+        assert_eq!(failure_reason(&Error::new(outer, error)), expected);
+    }
+}
+
+#[tokio::test]
+async fn legal_fdroid_components_are_not_frozen_invalid_by_reporting() {
+    for (package, version) in [
+        ("9legacy", "1.0-rc1"),
+        ("dotless", "v+1"),
+        ("org.example-app", "release_2"),
+    ] {
+        let (_, report) = collect(
+            Report::new(
+                "f-droid",
+                "download",
+                vec![(package.into(), Some(version.into()))],
+            )
+            .unwrap(),
+            async {
+                record(package, Some(version), Status::Success, Reason::Complete);
+            },
+        )
+        .await;
+        assert_eq!(json(&report)["results"][0]["status"], "success");
+        assert_eq!(json(&report)["results"][0]["package"], package);
+        assert_eq!(json(&report)["results"][0]["version"], version);
+    }
+}
+
+#[tokio::test]
+async fn real_transfer_failures_keep_integrity_transport_and_timeout_distinct() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_dl_stream_to_disk::AsyncDownload;
+    for (reply, digest, expected) in [
+        (
+            Some("HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nbad"),
+            true,
+            Reason::Integrity,
+        ),
+        (
+            Some("HTTP/1.1 200 OK\r\nContent-Length: 30\r\n\r\nbad"),
+            false,
+            Reason::Integrity,
+        ),
+        (
+            Some("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"),
+            false,
+            Reason::Integrity,
+        ),
+        (Some("not HTTP\r\n\r\n"), false, Reason::Transport),
+        (None, false, Reason::Timeout),
+    ] {
+        let out = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/artifact", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0; 4096];
+            assert!(socket.read(&mut buf).await.unwrap() > 0);
+            if let Some(reply) = reply {
+                socket.write_all(reply.as_bytes()).await.unwrap();
+            } else {
+                std::future::pending::<()>().await;
+            }
+        });
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_millis(100))
+            .build()
+            .unwrap();
+        let mut transfer = AsyncDownload::new(&url, out.path(), "app.apk").with_client(client);
+        let err = if digest {
+            transfer
+                .download_and_verify_sha256(&[0; 32], &None)
+                .await
+                .unwrap_err()
+        } else {
+            transfer.download(&None).await.unwrap_err()
+        };
+        server.abort();
+        let _ = server.await;
+        assert_eq!(download_reason(&err), expected, "{reply:?}: {err:?}");
+        assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0);
+    }
+}
+
+#[tokio::test]
 async fn provider_rejected_safe_looking_inputs_are_not_serialized() {
     let (_, report) = collect(
         Report::new(

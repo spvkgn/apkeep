@@ -1,4 +1,67 @@
 use super::*;
+
+#[test]
+fn long_version_code_compares_major_bits_not_only_low32() {
+    // Extend an aapt-compiled binary XML fixture with versionCodeMajor. The
+    // installed Android-23 resource jar predates that attribute, so add its
+    // binary representation explicitly rather than claiming a live API fixture.
+    let mut xml = manifest(&base_apk());
+    let old_size = u32_at(&xml, 12).unwrap() as usize;
+    let count = u32_at(&xml, 16).unwrap();
+    let data_start = u32_at(&xml, 28).unwrap() as usize;
+    assert_eq!(u32_at(&xml, 20).unwrap(), 0); // no styles
+    assert_eq!(u32_at(&xml, 24).unwrap() & 0x100, 0); // UTF-16
+    let mut pool = xml[8..8 + old_size].to_vec();
+    pool.splice(
+        28 + count as usize * 4..28 + count as usize * 4,
+        ((old_size - data_start) as u32).to_le_bytes(),
+    );
+    let name: Vec<u16> = "versionCodeMajor".encode_utf16().collect();
+    pool.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    for ch in name {
+        pool.extend_from_slice(&ch.to_le_bytes());
+    }
+    pool.extend_from_slice(&[0, 0]);
+    while !pool.len().is_multiple_of(4) {
+        pool.push(0);
+    }
+    let size = pool.len() as u32;
+    pool[4..8].copy_from_slice(&size.to_le_bytes());
+    pool[8..12].copy_from_slice(&(count + 1).to_le_bytes());
+    pool[20..24].copy_from_slice(&((data_start + 4) as u32).to_le_bytes());
+    xml.splice(8..8 + old_size, pool);
+    let mut pos = 8 + size as usize;
+    while u16_at(&xml, pos).unwrap() != 0x102 {
+        pos += u32_at(&xml, pos + 4).unwrap() as usize;
+    }
+    let start = pos + 16 + u16_at(&xml, pos + 24).unwrap() as usize;
+    let n = u16_at(&xml, pos + 28).unwrap();
+    let attrs = &xml[start..start + n as usize * 20];
+    let version = attrs
+        .as_chunks::<20>()
+        .0
+        .iter()
+        .find(|a| a[15] == 0x10)
+        .unwrap();
+    let mut major = version.to_vec();
+    major[4..8].copy_from_slice(&count.to_le_bytes());
+    major[8..12].copy_from_slice(&NONE.to_le_bytes());
+    major[16..20].copy_from_slice(&1u32.to_le_bytes());
+    let chunk_size = u32_at(&xml, pos + 4).unwrap();
+    xml.splice(start + n as usize * 20..start + n as usize * 20, major);
+    xml[pos + 4..pos + 8].copy_from_slice(&(chunk_size + 20).to_le_bytes());
+    xml[pos + 28..pos + 30].copy_from_slice(&(n + 1).to_le_bytes());
+    let total = xml.len() as u32;
+    xml[4..8].copy_from_slice(&total.to_le_bytes());
+    let apk = repack(&xml, &[]);
+    assert_eq!(
+        check(&apk, "com.example.app", Some((1u64 << 32) | 42)),
+        Ok(())
+    );
+    assert!(check(&apk, "com.example.app", Some(42)).is_err());
+    assert_eq!(check(&apk, "com.example.app", None), Ok(()));
+}
+
 use std::io::{Cursor, Write};
 
 // Synthetic, resource-only APKs compiled offline. No production APKs are copied.
@@ -26,8 +89,9 @@ pub(crate) fn base_apk() -> Vec<u8> {
 
 pub(crate) fn repack(manifest: &[u8], extra: &[(&str, &[u8])]) -> Vec<u8> {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let options =
-        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let options = zip::write::SimpleFileOptions::default()
+        .last_modified_time(zip::DateTime::default())
+        .compression_method(zip::CompressionMethod::Stored);
     writer.start_file("AndroidManifest.xml", options).unwrap();
     writer.write_all(manifest).unwrap();
     for (name, bytes) in extra {
@@ -96,6 +160,149 @@ fn valid_cdata_and_invalid_cdata_references_are_distinguished() {
     let mut bad = xml.clone();
     bad[pos + 22] = 1; // reserved byte
     assert!(check(&repack(&bad, &[]), "com.example.app", None).is_err());
+}
+
+// Insert extras into the first member of a multi-entry, aapt-derived fixture.
+// Update every shifted local offset and the EOCD, not just the extra length;
+// otherwise a directory-offset failure could mask the extra parser regression.
+fn with_zip_extra(extra: &[u8], local: bool) -> Vec<u8> {
+    let mut apk = repack(&manifest(&base_apk()), &[("assets/data", b"fixture")]);
+    let end = apk.len() - 22;
+    let directory = u32_at(&apk, end + 16).unwrap() as usize;
+    let count = u16_at(&apk, end + 10).unwrap() as usize;
+    assert_eq!(count, 2);
+    let name_len = u16_at(&apk, directory + 28).unwrap() as usize;
+    assert_eq!(u16_at(&apk, directory + 30).unwrap(), 0);
+    let added = extra.len();
+    if local {
+        assert_eq!(u32_at(&apk, directory + 42).unwrap(), 0);
+        assert_eq!(u16_at(&apk, 28).unwrap(), 0);
+        apk[28..30].copy_from_slice(&(added as u16).to_le_bytes());
+        let mut pos = directory;
+        for _ in 0..count {
+            let offset = u32_at(&apk, pos + 42).unwrap();
+            if offset > 0 {
+                apk[pos + 42..pos + 46].copy_from_slice(&(offset + added as u32).to_le_bytes());
+            }
+            pos += 46
+                + u16_at(&apk, pos + 28).unwrap() as usize
+                + u16_at(&apk, pos + 30).unwrap() as usize
+                + u16_at(&apk, pos + 32).unwrap() as usize;
+        }
+        apk[end + 16..end + 20].copy_from_slice(&((directory + added) as u32).to_le_bytes());
+        apk.splice(30 + name_len..30 + name_len, extra.iter().copied());
+    } else {
+        let size = u32_at(&apk, end + 12).unwrap();
+        apk[end + 12..end + 16].copy_from_slice(&(size + added as u32).to_le_bytes());
+        apk[directory + 30..directory + 32].copy_from_slice(&(added as u16).to_le_bytes());
+        let start = directory + 46 + name_len;
+        apk.splice(start..start, extra.iter().copied());
+    }
+    apk
+}
+
+#[test]
+fn short_zero_local_alignment_tails_preserve_valid_apk_contents() {
+    // Legacy zipalign pads local extras with 1..=3 zero bytes for 4-byte
+    // alignment, either alone or after a complete, non-special TLV record.
+    for prefix in [&[][..], &[0xfe, 0xca, 1, 0, 0xab][..]] {
+        for length in 1..=3 {
+            let mut extra = prefix.to_vec();
+            extra.extend(std::iter::repeat_n(0, length));
+            let apk = with_zip_extra(&extra, true);
+            let mut archive = zip::ZipArchive::new(Cursor::new(&apk)).unwrap();
+            for index in 0..archive.len() {
+                let mut bytes = Vec::new();
+                archive
+                    .by_index(index)
+                    .unwrap()
+                    .read_to_end(&mut bytes)
+                    .unwrap();
+            }
+            assert_eq!(manifest(&apk), manifest(&base_apk()));
+            assert_eq!(
+                check(&apk, "com.example.app", Some(42)),
+                Ok(()),
+                "extra {extra:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn nonzero_short_local_tails_are_zip_errors_not_manifest_errors() {
+    for prefix in [&[][..], &[0xfe, 0xca, 1, 0, 0xab][..]] {
+        for length in 1..=3 {
+            for nonzero in 0..length {
+                let mut extra = prefix.to_vec();
+                extra.extend(std::iter::repeat_n(0, length));
+                extra[prefix.len() + nonzero] = 1;
+                assert_eq!(
+                    check(&with_zip_extra(&extra, true), "com.example.app", None),
+                    Err("invalid APK ZIP directory"),
+                    "extra {extra:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn local_padding_does_not_hide_malformed_tlv_lengths_or_headers() {
+    for extra in [
+        &[0xfe, 0xca, 3, 0, 0, 0][..], // payload overrun, not a zero tail
+        &[0xfe, 0xca, 0xff, 0xff, 0, 0, 0][..],
+        &[0, 0, 1, 0][..], // complete zero-kind header still needs its payload
+        &[0, 0, 0, 1, 0, 0, 0][..],
+        &[0xfe, 0xca, 0, 0, 0xfe][..], // truncated next header
+    ] {
+        assert_eq!(
+            check(&with_zip_extra(extra, true), "com.example.app", None),
+            Err("invalid APK ZIP directory"),
+            "extra {extra:?}"
+        );
+    }
+}
+
+#[test]
+fn zip64_and_aes_extras_remain_rejected_in_local_and_central_headers() {
+    for local in [false, true] {
+        for kind in [1u16, 0x9901] {
+            for prefix in [&[][..], &[0xfe, 0xca, 0, 0][..], &[0, 0, 0, 0][..]] {
+                let mut extra = prefix.to_vec();
+                extra.extend_from_slice(&kind.to_le_bytes());
+                extra.extend_from_slice(&0u16.to_le_bytes());
+                extra.extend_from_slice(&[0, 0]);
+                assert_eq!(
+                    check(&with_zip_extra(&extra, local), "com.example.app", None),
+                    Err("unsupported APK ZIP extra field"),
+                    "local {local}, extra {extra:?}"
+                );
+            }
+            // A zero TLV before a forbidden record is parsed above, not
+            // treated as padding that could hide the following header.
+        }
+    }
+}
+
+#[test]
+fn central_extra_policy_stays_strict_for_short_zero_alignment_tails() {
+    for prefix in [&[][..], &[0xfe, 0xca, 1, 0, 0xab][..]] {
+        // A well-formed non-special TLV itself is still valid centrally.
+        assert_eq!(
+            check(&with_zip_extra(prefix, false), "com.example.app", Some(42)),
+            Ok(())
+        );
+        for length in 1..=3 {
+            let mut extra = prefix.to_vec();
+            extra.extend(std::iter::repeat_n(0, length));
+            assert_eq!(
+                check(&with_zip_extra(&extra, false), "com.example.app", None),
+                Err("invalid APK ZIP directory"),
+                "extra {extra:?}"
+            );
+        }
+    }
 }
 
 #[test]

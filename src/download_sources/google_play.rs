@@ -287,6 +287,9 @@ pub async fn download_apps(
     accept_tos: bool,
     mut options: HashMap<&str, &str>,
 ) -> bool {
+    if !super::check_parallel(&apps, parallel) {
+        return false;
+    }
     if aas_token.filter(|s| !s.trim().is_empty()).is_none()
         && auth_token.filter(|s| !s.trim().is_empty()).is_none()
     {
@@ -337,6 +340,9 @@ async fn download_with_backend<B: PlayBackend>(
     settings: DownloadSettings,
     limits: Limits,
 ) -> bool {
+    if !super::check_parallel(&apps, parallel) {
+        return false;
+    }
     let mut invalid = apps.is_empty();
     let mut seen = std::collections::HashSet::new();
     let apps: Vec<_> = apps
@@ -436,7 +442,7 @@ async fn download_with_backend<B: PlayBackend>(
                             eprintln!("Cannot publish Google Play download; destination may already exist.");
                             return false;
                         }
-                        println!("{app} downloaded successfully!");
+                        cli_println!("{app} downloaded successfully!");
                         results::complete();
                         return true;
                     }

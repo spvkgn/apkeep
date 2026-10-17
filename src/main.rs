@@ -146,6 +146,8 @@ use std::path::{Path, PathBuf};
 
 use configparser::ini::Ini;
 
+#[macro_use]
+mod output;
 mod cli;
 use cli::DownloadSource;
 
@@ -450,7 +452,9 @@ async fn run(matches: clap::ArgMatches) {
         .into_iter()
         .filter(|item| seen.insert(item.clone()))
         .collect();
-    let operation = async {
+    // Keep the large provider-dispatch future on the heap before nesting the
+    // output/report scopes (also safe on small executor/test thread stacks).
+    let operation = Box::pin(async {
         let huawei_region = if download_source == DownloadSource::HuaweiAppGallery {
             match download_sources::huawei_app_gallery::region(
                 matches.get_one::<String>("options").map(String::as_str),
@@ -496,13 +500,9 @@ async fn run(matches: clap::ArgMatches) {
             }
         } else {
             let parallel = matches.get_one::<usize>("parallel").copied().unwrap();
-            if parallel == 0 {
+            if !download_sources::valid_parallel(parallel) {
                 results::pending_error(results::Reason::InvalidInput);
-                if download_source == DownloadSource::HuaweiAppGallery {
-                    eprintln!("Huawei AppGallery: nonempty app list and parallel >= 1 required");
-                } else {
-                    eprintln!("parallel must be greater than zero");
-                }
+                eprintln!("parallel must be between 1 and 16");
                 return false;
             }
             let sleep_duration = matches.get_one::<u64>("sleep_duration").copied().unwrap();
@@ -511,7 +511,7 @@ async fn run(matches: clap::ArgMatches) {
                     Ok(_) => Some(PathBuf::from(outpath)),
                     Err(_) => {
                         results::pending_error(results::Reason::LocalIo);
-                        input_error("OUTPATH is not a valid directory");
+                        input_error("OUTPATH must be a real directory owned by the current user and not group/world-writable (unsafe or inaccessible output directory)");
                         return false;
                     }
                 }
@@ -689,12 +689,17 @@ async fn run(matches: clap::ArgMatches) {
             }
         }
         true
-    };
+    });
+    let operation = output::capture(operation);
     let success = if let Some(mut report) = report {
-        let (success, collected) = results::collect(report, operation).await;
+        let ((success, output_ok), collected) = results::collect(report, operation).await;
         report = collected;
-        report.finish(success);
-        let mut success = success && report.succeeded();
+        if !output_ok {
+            output::diagnostic();
+            report.output_failed();
+        }
+        report.finish(success && output_ok);
+        let mut success = success && output_ok && report.succeeded();
         if let Some((directory, name)) = report_destination {
             if report.write_to(&directory, &name).is_err() {
                 eprintln!("Could not publish result report");
@@ -703,7 +708,11 @@ async fn run(matches: clap::ArgMatches) {
         }
         success
     } else {
-        operation.await
+        let (success, output_ok) = operation.await;
+        if !output_ok {
+            output::diagnostic();
+        }
+        success && output_ok
     };
     if !success {
         std::process::exit(1);

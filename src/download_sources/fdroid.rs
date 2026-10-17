@@ -189,7 +189,7 @@ fn safe_error_summary(err: &(dyn Error + 'static)) -> String {
 fn print_error(err_msg: &str, output_format: OutputFormat) {
     eprintln!("{}", err_msg);
     if output_format.is_json() {
-        println!("{}", json!({"error": err_msg}));
+        cli_println!("{}", json!({"error": err_msg}));
     }
 }
 
@@ -211,6 +211,9 @@ async fn download_apps_with_client(
     options: HashMap<&str, &str>,
     client: Option<&reqwest::Client>,
 ) -> bool {
+    if !super::check_parallel(&apps, parallel) {
+        return false;
+    }
     let (apps, all_valid) = valid_requests(apps);
     if options
         .get("arch")
@@ -333,6 +336,9 @@ async fn download_from_index_pinned(
     arch: Option<String>,
     repository: RepositoryDownload<'_>,
 ) -> bool {
+    if !super::check_parallel(&apps, parallel) {
+        return false;
+    }
     let outpath = output.path();
     let RepositoryDownload {
         repo: configured_repo,
@@ -476,7 +482,7 @@ async fn download_from_index_pinned(
                     };
                     match tokio::time::timeout(REQUEST_TIMEOUT, transfer).await {
                         Ok(Ok(())) => {
-                            println!("{label} downloaded successfully!");
+                            cli_println!("{label} downloaded successfully!");
                             results::complete();
                             return true;
                         }
@@ -967,7 +973,7 @@ fn parse_json_display_versions_with_trust(
         let mut versions: Vec<_> = versions.into_iter().collect();
         versions.sort();
         if output_format.is_plaintext() {
-            println!(
+            cli_println!(
                 "Versions available for {app_id} on F-Droid:\n| {}",
                 versions
                     .iter()
@@ -990,7 +996,7 @@ fn parse_json_display_versions_with_trust(
         json_root.insert(app_id, json!({"available_versions": versions.into_iter().map(|v| json!({"version": v})).collect::<Vec<_>>()}));
     }
     if output_format.is_json() {
-        println!("{}", json!({"source": "F-Droid", "apps": json_root}));
+        cli_println!("{}", json!({"source": "F-Droid", "apps": json_root}));
     }
     if all_ok {
         Ok(())

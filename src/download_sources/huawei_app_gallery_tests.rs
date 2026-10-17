@@ -1,6 +1,137 @@
 use super::apk_validation::tests::base_apk as fixture;
 use super::*;
 
+#[tokio::test]
+async fn direct_artifact_truncation_and_invalid_chunk_encoding_report_integrity() {
+    for response in [
+        b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nx".as_slice(),
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n1\r\nx\r\nZZ\r\n".as_slice(),
+    ] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/private?token=PRIVATE_TOKEN", listener.local_addr().unwrap());
+        let artifact = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0; 4096];
+            assert!(socket.read(&mut buf).await.unwrap() > 0);
+            socket.write_all(response).await.unwrap();
+            socket.shutdown().await.unwrap();
+        });
+        let server = Server::new(|_| vec![api_reply(&url)]).await;
+        let out = tempfile::tempdir().unwrap();
+        let report = results::Report::new("huawei-app-gallery", "download", vec![("com.example.app".into(), None)]).unwrap();
+        let (ok, mut report) = results::collect(report, injected_download_batch(&test_client(), &server.endpoint,
+            vec![("com.example.app".into(), None)], 1, 0, out.path(), "IE")).await;
+        artifact.await.unwrap();
+        report.finish(ok);
+        let bytes = report.json_bytes().unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(!ok);
+        assert_eq!(server.requests.lock().unwrap().len(), 1);
+        assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0, "partial or published APK left behind");
+        assert_eq!(value["success"], false);
+        assert_eq!(value["results"][0]["status"], "error");
+        assert_eq!(value["results"][0]["reason"], "integrity");
+        assert!(!String::from_utf8(bytes).unwrap().contains("PRIVATE_TOKEN"));
+    }
+}
+
+#[tokio::test]
+async fn direct_request_metadata_and_artifact_failures_keep_typed_distinctions() {
+    for metadata in [false, true] {
+        for (mode, expected) in [
+            ("401", "authentication"),
+            ("403", "authentication"),
+            ("503", "transport"),
+            ("timeout", "timeout"),
+            ("malformed", "integrity"),
+            ("short", "integrity"),
+        ] {
+            let server = Server::new(|base| {
+                let reply = Reply {
+                    status: mode.parse().unwrap_or(200),
+                    length: (mode == "short").then_some(100),
+                    delay: if mode == "timeout" {
+                        Duration::from_secs(2)
+                    } else {
+                        Duration::ZERO
+                    },
+                    ..Reply::ok(b"x")
+                };
+                if metadata {
+                    vec![reply]
+                } else {
+                    vec![
+                        api_reply(&format!("{base}/private?token=PRIVATE_TOKEN")),
+                        reply,
+                    ]
+                }
+            })
+            .await;
+            let out = tempfile::tempdir().unwrap();
+            let client = test_client();
+            let (ok, report) = results::collect(
+                results::Report::new(
+                    "huawei-app-gallery",
+                    "download",
+                    vec![("com.example.app".into(), None)],
+                )
+                .unwrap(),
+                injected_download_batch(
+                    &client,
+                    &server.endpoint,
+                    vec![("com.example.app".into(), None)],
+                    1,
+                    0,
+                    out.path(),
+                    "IE",
+                ),
+            )
+            .await;
+            assert!(!ok);
+            assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0);
+            let value: Value = serde_json::from_slice(&report.json_bytes().unwrap()).unwrap();
+            assert_eq!(value["results"][0]["status"], "error");
+            assert_eq!(value["results"][0]["reason"], expected, "{metadata}/{mode}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn refused_connection_stays_transport_without_partial_output() {
+    for metadata in [false, true] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/private?token=PRIVATE_TOKEN",
+            listener.local_addr().unwrap()
+        );
+        drop(listener);
+        let server = Server::new(|_| vec![api_reply(&url)]).await;
+        let out = tempfile::tempdir().unwrap();
+        let (ok, report) = results::collect(
+            results::Report::new(
+                "huawei-app-gallery",
+                "download",
+                vec![("com.example.app".into(), None)],
+            )
+            .unwrap(),
+            injected_download_batch(
+                &test_client(),
+                if metadata { &url } else { &server.endpoint },
+                vec![("com.example.app".into(), None)],
+                1,
+                0,
+                out.path(),
+                "IE",
+            ),
+        )
+        .await;
+        assert!(!ok);
+        assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0);
+        let value: Value = serde_json::from_slice(&report.json_bytes().unwrap()).unwrap();
+        assert_eq!(value["results"][0]["reason"], "transport");
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn ancestor_swap_during_huawei_transfer_pins_publication_and_cleanup() {

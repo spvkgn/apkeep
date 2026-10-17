@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+- Require public HTTPS, including redirect targets, for RuStore/APKPure/Google Play artifact transfers; retain explicit trusted-client fixtures and hash-verified F-Droid/Huawei HTTP compatibility.
+- Preserve typed request/timeout failures and report checksum mismatch, truncated and empty artifacts as integrity failures rather than transport failures.
+- Correct direct RuStore/Huawei body failure classification and message-bearing outer I/O timeout/permission precedence, including the Google caller deadline.
+- Handle operational stdout write/flush failure with controlled nonzero exit and coherent final reports, retaining completed APKs without claiming delivered success.
+- Share the bounded APK validator between Huawei and RuStore; validate RuStore ZIP/CRC, binary manifest, requested package and standalone base before publication (no API digest/version or signer trust claimed).
+- Bound parallel downloads to 1–16 at CLI and direct provider entry points; keep default 4.
+- Explain output ownership/write-mode requirements in help and diagnostics; require dot-separated RuStore package identifiers consistently.
+- Make report serialization accept safe nonstandard F-Droid components without preempting source validation; document unordered JSON object keys.
+- Borrow ZIP directory entry names from the capped directory buffer rather than copying each name; retain deliberate expansion/ratio/deadline limits.
+- Clarify explicit CLI repository URL trust versus service-side repository allowlisting; arbitrary public ports are not sandboxed.
 - Fail the CLI on APKPure, F-Droid and Google Play errors; preserve mixed-batch successes.
 - Publish shared downloads atomically without clobbering existing outputs, verify F-Droid SHA256 before publication, and discard failed Google Play staging directories.
 - Bound source metadata/download operations and expand loopback, cancellation, race and credential-terminal regressions.

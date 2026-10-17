@@ -217,7 +217,7 @@ fn network_client(
     policy: NetworkPolicy,
     total: TokioDuration,
 ) -> Result<reqwest::Client, &'static str> {
-    tokio_dl_stream_to_disk::public_http_client_builder()
+    tokio_dl_stream_to_disk::public_https_client_builder()
         .connect_timeout(policy.connect)
         .read_timeout(policy.idle_read)
         .timeout(total)
@@ -270,7 +270,7 @@ async fn request_json_with_policy(
             } else {
                 results::error(
                     "RuStore network error while reading response".to_string(),
-                    Reason::Transport,
+                    results::failure_reason(&error),
                 )
             }
         })? {
@@ -335,6 +335,7 @@ pub async fn download_apps(
 
 fn valid_package_name(package: &str) -> bool {
     package.len() <= 240
+        && package.contains('.')
         && package.split('.').all(|segment| {
             let mut bytes = segment.bytes();
             matches!(bytes.next(), Some(b) if b.is_ascii_alphabetic() || b == b'_')
@@ -352,9 +353,7 @@ async fn download_apps_at(
     endpoints: (&str, &str),
     injected_clients: Option<(&reqwest::Client, &reqwest::Client)>,
 ) -> bool {
-    if parallel == 0 {
-        eprintln!("RuStore parallel must be greater than zero");
-        results::batch_error(&apps, Reason::InvalidInput);
+    if !super::check_parallel(&apps, parallel) {
         return false;
     }
     if apps.is_empty() {
@@ -395,7 +394,7 @@ async fn download_apps_at(
         for endpoint in [endpoints.0, endpoints.1] {
             if reqwest::Url::parse(endpoint)
                 .ok()
-                .is_none_or(|url| tokio_dl_stream_to_disk::validate_public_url(&url).is_err())
+                .is_none_or(|url| tokio_dl_stream_to_disk::validate_public_https_url(&url).is_err())
             {
                 eprintln!("RuStore metadata endpoint is not public HTTP(S)");
                 results::batch_error(&apps, Reason::InvalidInput);
@@ -436,7 +435,7 @@ async fn download_apps_at(
                             return false;
                         }
                         if app_version.is_none() {
-                            mp_log.suspend(|| println!("Downloading {}...", app_id));
+                            mp_log.suspend(|| cli_println!("Downloading {}...", app_id));
                             if sleep_duration > 0 {
                                 sleep(TokioDuration::from_millis(sleep_duration)).await;
                             }
@@ -610,9 +609,9 @@ async fn download_apk_with_policy_pinned(
     } else {
         if reqwest::Url::parse(&download_url)
             .ok()
-            .is_none_or(|url| tokio_dl_stream_to_disk::validate_public_url(&url).is_err())
+            .is_none_or(|url| tokio_dl_stream_to_disk::validate_public_https_url(&url).is_err())
         {
-            mp.suspend(|| eprintln!("RuStore artifact URL is not public HTTP(S)"));
+            mp.suspend(|| eprintln!("RuStore artifact URL is not public HTTPS"));
             return false;
         }
         owned_client = match network_client(policy, policy.apk_total) {
@@ -669,7 +668,7 @@ async fn download_apk_with_policy_pinned(
                 results::note(Status::Error, Reason::Timeout);
                     results::error("RuStore APK request timed out", Reason::Timeout)
                 } else {
-                    results::error("Could not read download", Reason::Transport)
+                    results::error("Could not read download", results::failure_reason(&error))
                 }
             })? {
                 let next_length = downloaded
@@ -697,6 +696,10 @@ async fn download_apk_with_policy_pinned(
                 .await
                 .map_err(|_| results::error("Could not flush download file", Reason::LocalIo))?;
             drop(file);
+            let mut validation_file = temporary.reopen()
+                .map_err(|_| results::error("Could not open APK for validation", Reason::LocalIo))?;
+            super::apk_validation::validate(&mut validation_file, &app_string, None)
+                .map_err(|_| results::error("RuStore APK validation failed", Reason::Integrity))?;
             temporary.persist_noclobber(&destination).map_err(|_| {
                 results::error("RuStore publication failed; destination may exist and is unverified; not retrying", Reason::LocalIo)
             })?;
@@ -706,7 +709,7 @@ async fn download_apk_with_policy_pinned(
         .unwrap_or_else(|_| Err(results::error("RuStore APK request timed out", Reason::Timeout)));
         match result {
             Ok(()) => {
-                mp.suspend(|| println!("{} downloaded successfully!", app_string));
+                mp.suspend(|| cli_println!("{} downloaded successfully!", app_string));
                 results::complete();
                 return true;
             }

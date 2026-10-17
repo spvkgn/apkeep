@@ -9,6 +9,8 @@ and is rejected by the parser before token output, prompting or network work.
 {"schema_version":1,"source":"ru-store","operation":"download","success":false,"results":[{"index":0,"package":"com.example.app","version":null,"status":"unavailable","reason":"variant_unavailable"}]}
 ```
 
+JSON object keys are unordered; consumers must parse fields, not compare key order.
+
 Sources use their CLI names: `apk-pure`, `f-droid`, `google-play`, `ru-store`,
 `huawei-app-gallery`. Operations are `download` or `list`. Indexes are zero-based
 input positions. Input order and exact duplicates are retained. Identical
@@ -33,7 +35,28 @@ Disabling F-Droid index verification (`verify-index=false`) cannot establish
 Provider-returned numeric codes are not guessed into undocumented absence/auth
 meanings. Generic Google string errors remain `error/unperformed`.
 
-Only allowlisted, length-bounded package/version tokens are serialized. Invalid
+Checksum mismatches, empty bodies and incomplete/decode-failed artifact bodies are
+`integrity`; request/connect failures are `transport`, and deadlines stay `timeout`.
+The direct RuStore/Huawei body readers preserve these distinctions, including
+metadata body framing failures versus malformed JSON/API/schema outcomes. HTTP
+401/403 remain `authentication`. A message-bearing I/O `TimedOut` retains
+`timeout`, and `PermissionDenied` retains `local_io`; recognized typed nested
+transport errors remain classifiable, while an unrecognized message in an
+`Other` I/O wrapper falls back to `local_io`, never string matching.
+
+Operational stdout writes/flushes are fallible. A failed sink (including a broken
+pipe or full device) causes controlled exit 1, not a panic. An established report
+is still finalized with `success:false`: completed/available outcomes and pending
+rows become `error/local_io`, while known provider/input errors retain their
+reason and redaction. Already published APKs are retained; the failed command is
+not a successful deliverable. Healthy listing plaintext/JSON and help bytes are
+unchanged. Parser help/version output remains owned by clap.
+
+Only allowlisted, length-bounded package/version tokens are serialized. The package
+allowlist is a safe serialization envelope (ASCII letters/digits, `.`, `_`, `-`,
+`+`, at most 255 bytes, excluding empty/`.`/`..`), not an Android syntax check.
+This preserves legal nonstandard F-Droid identifiers. Each provider still rejects
+its own invalid inputs and explicitly marks them `invalid_input`. Invalid
 input rows have `null` identifiers, with `error/invalid_input`. Diagnostics, response bodies,
 URLs, paths and credentials are not report fields. Safe package/version fields
 are input identifiers, not a claim that a store authenticated those identifiers.
