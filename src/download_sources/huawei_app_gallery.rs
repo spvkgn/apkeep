@@ -1,7 +1,6 @@
 //! Huawei AppGallery support for the latest APK offered to the configured client profile.
 
-#[path = "apk_validation.rs"]
-mod apk_validation;
+use super::apk_validation;
 use crate::results::{self, Reason, Status};
 
 pub fn region(options: Option<&str>) -> Result<String, &'static str> {
@@ -360,14 +359,7 @@ async fn download_one_pinned(
 }
 
 fn network_error(stage: &str, error: &reqwest::Error) -> String {
-    results::note(
-        Status::Error,
-        if error.is_timeout() {
-            Reason::Timeout
-        } else {
-            Reason::Transport
-        },
-    );
+    results::note(Status::Error, results::failure_reason(error));
     // Never format reqwest errors: they can contain signed URLs and response bodies.
     format!(
         "{stage} {}",
@@ -405,6 +397,9 @@ pub async fn download_apps(
     outpath: &std::path::Path,
     region: &str,
 ) -> bool {
+    if !super::check_parallel(&apps, parallel) {
+        return false;
+    }
     let client = match http_client_builder().build() {
         Ok(client) => client,
         Err(_) => {
@@ -447,6 +442,9 @@ async fn download_batch(
         client,
         public_only,
     } = transport;
+    if !super::check_parallel(&apps, parallel) {
+        return false;
+    }
     if parallel == 0 || apps.is_empty() {
         results::batch_error(&apps, Reason::InvalidInput);
         eprintln!("Huawei AppGallery: nonempty app list and parallel >= 1 required");
@@ -485,7 +483,7 @@ async fn download_batch(
             };
             match result {
                 Ok(()) => {
-                    println!(
+                    cli_println!(
                         "Huawei AppGallery: {label}: downloaded and matched API size/SHA256 (region {region})"
                     );
                     true
@@ -524,7 +522,7 @@ pub fn list_versions(apps: Vec<(String, Option<String>)>) -> bool {
             },
         );
         if valid_package(&app) {
-            println!("Huawei AppGallery does not expose historical versions ({app}).");
+            cli_println!("Huawei AppGallery does not expose historical versions ({app}).");
         } else {
             eprintln!("Huawei AppGallery: invalid package ID");
             success = false;

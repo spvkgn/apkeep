@@ -154,7 +154,7 @@ pub fn app() -> Command {
         )
         .arg(
             Arg::new("parallel")
-                .help("The number of parallel APK fetches to run at a time")
+                .help("The number of parallel APK fetches to run at a time (1-16)")
                 .short('r')
                 .long("parallel")
                 .action(ArgAction::Set)
@@ -172,7 +172,7 @@ pub fn app() -> Command {
         )
         .arg(
             Arg::new("OUTPATH")
-                .help("Path to store output files")
+                .help("Path to store output files (owned by the current user, not group/world-writable; no symlinks)")
                 .action(ArgAction::Set)
                 .index(1)
                 .required_unless_present_any(["list_versions", "google_oauth_token"]),

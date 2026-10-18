@@ -1,5 +1,60 @@
 //! Shared input contracts; fixtures never contain real credentials.
 
+#[tokio::test]
+async fn all_direct_providers_reject_excess_parallelism_before_io_or_auth() {
+    use crate::download_sources::{apkpure, fdroid, google_play, huawei_app_gallery, rustore};
+    use crate::results::{collect, Report};
+    for source in [
+        "apk-pure",
+        "f-droid",
+        "google-play",
+        "huawei-app-gallery",
+        "ru-store",
+    ] {
+        for parallel in [0, 17, usize::MAX] {
+            let apps = vec![("com.example.app".to_owned(), None)];
+            let report = Report::new(source, "download", apps.clone()).unwrap();
+            let (ok, report) = collect(report, async {
+                let out = Path::new("/not-an-existing-output");
+                match source {
+                    "apk-pure" => {
+                        apkpure::download_apps(apps, parallel, 0, out, HashMap::new()).await
+                    }
+                    "f-droid" => {
+                        fdroid::download_apps(apps, parallel, 0, out, HashMap::new()).await
+                    }
+                    "google-play" => {
+                        google_play::download_apps(
+                            apps,
+                            parallel,
+                            0,
+                            "",
+                            None,
+                            None,
+                            out,
+                            false,
+                            HashMap::new(),
+                        )
+                        .await
+                    }
+                    "huawei-app-gallery" => {
+                        huawei_app_gallery::download_apps(apps, parallel, 0, out, "IE").await
+                    }
+                    _ => rustore::download_apps(apps, parallel, 0, out, HashMap::new()).await,
+                }
+            })
+            .await;
+            assert!(!ok);
+            let value: serde_json::Value =
+                serde_json::from_slice(&report.json_bytes().unwrap()).unwrap();
+            assert_eq!(
+                value["results"][0]["reason"], "invalid_input",
+                "{source} {parallel}: {value}"
+            );
+        }
+    }
+}
+
 #[test]
 fn single_app_empty_version_matches_csv_latest_and_preserves_nonempty_version() {
     assert_eq!(

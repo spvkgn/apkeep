@@ -497,7 +497,7 @@ fn guard_directory(file: &mut std::fs::File, started: Instant) -> Result<usize, 
         {
             return Err("unsafe APK ZIP member path");
         }
-        if !names.insert(name.to_vec()) {
+        if !names.insert(name) {
             return Err("duplicate APK ZIP member");
         }
         if name == b"AndroidManifest.xml" {
@@ -514,6 +514,7 @@ fn guard_directory(file: &mut std::fs::File, started: Instant) -> Result<usize, 
             directory
                 .get(name_end..name_end + extra_size)
                 .ok_or(INVALID_ZIP)?,
+            false,
         )?;
         if entry_end > directory.len() {
             return Err(INVALID_ZIP);
@@ -556,7 +557,7 @@ fn guard_directory(file: &mut std::fs::File, started: Instant) -> Result<usize, 
         if &local_name_extra[..name_size] != name {
             return Err(INVALID_ZIP);
         }
-        check_extra(&local_name_extra[name_size..])?;
+        check_extra(&local_name_extra[name_size..], true)?;
         ranges.push((local_offset, data_end));
         position = entry_end;
     }
@@ -571,9 +572,21 @@ fn guard_directory(file: &mut std::fs::File, started: Instant) -> Result<usize, 
     Ok(count)
 }
 
-fn check_extra(bytes: &[u8]) -> Result<(), &'static str> {
+fn check_extra(bytes: &[u8], local: bool) -> Result<(), &'static str> {
     let mut pos = 0;
     while pos < bytes.len() {
+        let remaining = &bytes[pos..];
+        if remaining.len() < 4 {
+            // Legacy Android zipalign appends zero bytes to LOCAL extras for
+            // 4-byte alignment. Accept only a 1..=3-byte tail at a TLV boundary:
+            // it cannot contain a record header. Central extras stay strict;
+            // complete headers and their declared lengths are never skipped.
+            return if local && remaining.iter().all(|byte| *byte == 0) {
+                Ok(())
+            } else {
+                Err(INVALID_ZIP)
+            };
+        }
         let kind = u16_at(bytes, pos)?;
         let size = u16_at(bytes, pos + 2)? as usize;
         if kind == 1 || kind == 0x9901 {

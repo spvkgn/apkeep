@@ -10,7 +10,7 @@ output/config directories and child-only environment changes.
 
 ```sh
 cargo test --locked --all-targets
-cargo test --locked -p tokio-dl-stream-to-disk --lib
+cargo test --offline --manifest-path third-party/tokio-dl-stream-to-disk/Cargo.toml --features sha256sum
 cargo build --locked
 APKEEP_TEST_BINARY=target/debug/apkeep python3 -B -m unittest discover -s tests
 cargo clippy --locked --all-targets
@@ -55,6 +55,22 @@ it asserts no-echo, terminal restoration and refusal before authentication.
 
 ## Source-review contract regressions
 
+Direct RuStore and Huawei socket fixtures distinguish truncated Content-Length and
+malformed chunk framing (`integrity`), metadata parsing/schema errors, HTTP 401/403,
+request/connect failures and deadlines; failure leaves no APK or private partial.
+A synthetic pending future exercises the real Google `bounded`/`play_outcome`
+caller deadline without authentication. Message-bearing outer I/O kinds and typed
+nested reqwest errors have separate regressions.
+
+`tests/stdout_cli.rs` sends real offline Huawei and F-Droid JSON-list children to
+`/dev/full` and a closed pipe: exit 1, no panic, complete coherent report (also
+nonzero without a report). A test-only loopback transport runs the actual common
+CLI driver through a successful RuStore publication with both failing sinks:
+the APK is retained, but report success is false with `error/local_io`. All five
+providers' operational print macros use the same scoped fallible helper; an
+inventory test guards against bypasses, and write/flush/scope-isolation tests
+cover that helper. Clap help and normal JSON/plaintext output remain byte-compatible.
+
 The real child CLI checks stderr-only input/OUTPATH/CSV failures in JSON mode,
 redacted gpapi constructor errors (download and OAuth paths), RuStore bounded
 package/listing behavior, and rejection of existing unverified files. Store unit
@@ -71,6 +87,33 @@ The root Cargo patch uses the MIT-preserving local copy documented in
 assert immediate byte visibility (not eventual reads), SHA256 stream initialization,
 existing-file preservation and truncated-body failures. Keep this patch during
 source copies/builds; the root lockfile alone is not sufficient.
+
+## Rereview follow-up regressions
+
+Run vendored transfer tests explicitly with their checksum feature:
+`cargo test --offline --manifest-path third-party/tokio-dl-stream-to-disk/Cargo.toml --features sha256sum`.
+The standalone vendor manifest has no tracked lockfile; `--locked` is not a valid
+first invocation there. Keep the root Cargo.lock unchanged. Rust APK fixtures
+require `aapt`, `/usr/share/java/com.android.android-23.jar`, `keytool` and
+`apksigner`; no real downloaded APK is embedded. Fixture ZIP timestamps are fixed
+for exact-byte assertions across child processes.
+
+Regressions exercise actual shared transfers for checksum/truncation/empty-body
+integrity versus malformed-request transport and timeout, public HTTPS initial
+refusal, and the exact production redirect policy with no target I/O. The redirect
+fixture uses a trusted plaintext source seam; this is a policy test, not a TLS
+handshake/downgrade integration certificate. RuStore tests require a real compiled
+standalone APK for every successful fixture, reject arbitrary/wrong-package/split/
+truncated ZIPs, and retain cancellation/race/pinned-directory contracts. A binary
+manifest fixture checks longVersionCode major bits without assuming API low32
+semantics. Direct-source and real-child CLI tests check the finite 1–16 bound,
+source-specific invalid reporting and output-owner/write-policy diagnostics.
+
+Local-extra alignment regressions mutate a multi-member, offline aapt-derived
+APK and update all shifted local offsets plus the EOCD directory offset. They
+check 1–3 zero bytes alone/after a complete TLV, preserved manifest/CRC, nonzero
+short tails, malformed TLV lengths, ZIP64/AES records (including after a zero
+TLV), and strict central-extra rejection. Real downloaded APKs are not fixtures.
 
 ## Coverage
 

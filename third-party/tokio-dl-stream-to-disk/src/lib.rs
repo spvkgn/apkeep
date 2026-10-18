@@ -18,7 +18,10 @@
 pub mod error;
 mod network;
 mod output;
-pub use network::{public_http_client_builder, validate_public_url};
+pub use network::{
+    public_http_client_builder, public_https_client_builder, validate_public_https_url,
+    validate_public_url,
+};
 pub use output::OutputDirectory;
 
 use std::error::Error;
@@ -139,8 +142,8 @@ impl AsyncDownload {
         let client = if let Some(client) = &self.client {
             client.clone()
         } else {
-            validate_public_url(&reqwest::Url::parse(&self.url)?)?;
-            public_http_client_builder()
+            validate_public_https_url(&reqwest::Url::parse(&self.url)?)?;
+            public_https_client_builder()
                 .connect_timeout(self.timeouts.connect)
                 .read_timeout(self.timeouts.read)
                 .timeout(self.timeouts.whole)
@@ -267,9 +270,7 @@ impl AsyncDownload {
         self.pin_output()?;
         let path = self.check_output()?;
         if self.response_stream.is_none() {
-            self.get_non_consumable()
-                .await
-                .map_err(|_| TDSTDError::new(TDSTDErrorKind::InvalidResponse))?;
+            self.get_non_consumable().await.map_err(TDSTDError::from)?;
         }
         self.check_declared_length()?;
         // Keep the owner in this future: error, timeout, panic or cancellation
@@ -304,14 +305,18 @@ impl AsyncDownload {
             }
         }
         if total == 0 || self.length.is_some_and(|expected| expected != total) {
-            return Err(TDSTDError::new(TDSTDErrorKind::InvalidResponse));
+            return Err(
+                IOError::new(ErrorKind::InvalidData, "artifact integrity check failed").into(),
+            );
         }
         dest.flush().await?;
         #[cfg(feature = "sha256sum")]
         let digest = hasher.finalize().to_vec();
         #[cfg(feature = "sha256sum")]
         if _expected.is_some_and(|expected| expected != digest.as_slice()) {
-            return Err(TDSTDError::new(TDSTDErrorKind::InvalidResponse));
+            return Err(
+                IOError::new(ErrorKind::InvalidData, "artifact integrity check failed").into(),
+            );
         }
         drop(dest);
         // persist_noclobber atomically creates the destination name without

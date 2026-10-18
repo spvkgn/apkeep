@@ -1572,7 +1572,7 @@ async fn typed_report_missing_selection_still_downloads_valid_job_but_returns_fa
         download_from_index(
             apk_index(&repo, &[(APP, "app.apk")]),
             vec![("missing.app".into(), None), (APP.into(), None)],
-            0,
+            1,
             0,
             dir.path(),
             None,

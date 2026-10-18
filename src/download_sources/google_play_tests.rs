@@ -2,6 +2,33 @@
 use super::*;
 
 #[tokio::test]
+async fn real_bounded_play_deadline_has_timeout_outcome_without_authentication() {
+    let error = bounded::<()>(Duration::from_millis(1), std::future::pending())
+        .await
+        .unwrap_err();
+    assert_eq!(play_outcome(&error), (Status::Error, Reason::Timeout));
+    let (ok, mut report) = results::collect(
+        results::Report::new(
+            "google-play",
+            "download",
+            vec![("com.example.app".into(), None)],
+        )
+        .unwrap(),
+        results::observe("com.example.app", None, async {
+            let (status, reason) = play_outcome(&error);
+            results::note(status, reason);
+            false
+        }),
+    )
+    .await;
+    report.finish(ok);
+    let value: serde_json::Value = serde_json::from_slice(&report.json_bytes().unwrap()).unwrap();
+    assert_eq!(value["success"], false);
+    assert_eq!(value["results"][0]["status"], "error");
+    assert_eq!(value["results"][0]["reason"], "timeout");
+}
+
+#[tokio::test]
 async fn real_google_artifact_adapter_uses_injected_pinned_guard_for_nested_downloads() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let out = tempfile::tempdir().unwrap();

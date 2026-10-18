@@ -41,11 +41,7 @@ fn zero_parallel_is_rejected_before_downloading_or_authentication() {
         assert!(!output.status.success(), "{source} accepted zero parallel");
         assert!(output.stdout.is_empty(), "{source}: {:?}", output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let expected = if source == "huawei-app-gallery" {
-            "Huawei AppGallery: nonempty app list and parallel >= 1 required"
-        } else {
-            "parallel must be greater than zero"
-        };
+        let expected = "parallel must be between 1 and 16";
         assert!(stderr.contains(expected), "{source}: {stderr}");
     }
     assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0);

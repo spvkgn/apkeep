@@ -16,6 +16,11 @@
 - All input, CSV and OUTPATH diagnostics use stderr, without raw paths/argv or
   Debug-formatted errors. JSON listing stdout is either empty on preflight failure
   or the source's JSON document, never usage/error text.
+- Operational stdout writes and flushes fail with controlled exit 1, including
+  `/dev/full` and broken pipes, without preventing final report publication.
+  No global panic hook converts failure to success. Existing complete APKs stay
+  on disk, but the report revokes delivered success/availability as `local_io`;
+  pre-existing typed provider/input errors remain intact. Normal stdout is unchanged.
 - Mixed batches retain completed outputs and process remaining valid inputs, but
   any failed/invalid item makes the overall command fail. Consumers must check
   exit status **and** validate the selected completed artifact; neither alone
@@ -23,6 +28,10 @@
 - Errors must not dump credentials, signed URLs, server response bodies or
   unvalidated input into diagnostics. Requesting a new AAS token is deliberately
   an output-producing operation: protect its stdout as a secret.
+
+Download parallelism is 1–16 inclusive (default 4). CLI and direct provider
+entry points reject out-of-range values as `invalid_input` before authentication
+or network work. This bounds in-flight transfers, not aggregate batch disk usage.
 
 ## Files and deadlines
 
@@ -76,8 +85,10 @@ on a trusted process temporary directory; untrusted TMPDIR is not supported.
 ## Public HTTP boundary
 
 Production metadata and artifact clients for RuStore, Huawei, APKPure and F-Droid
-use the shared public-network builder and validate initial URLs. Only HTTP(S)
-without URL credentials is allowed; literal private/link-local/loopback/reserved
+use the shared public-network builder and validate initial URLs. F-Droid and Huawei allow HTTP(S) for hash-verified artifacts; RuStore, APKPure
+and Google Play artifacts require HTTPS for initial URLs and every redirect.
+The shared downloader defaults to public HTTPS; trusted Rust callers supplying
+clients own that policy explicitly. No URL credentials are allowed; literal private/link-local/loopback/reserved
 addresses and nonpublic DNS answers are refused. Checked DNS answers are passed
 directly to the connector, and every redirect is checked again. Environment
 proxies are disabled. This is an intentional compatibility restriction: there is
@@ -89,10 +100,38 @@ Google Play remains a boundary: gpapi's internal authentication/metadata HTTP
 clients are not under this builder's control. Do not describe this as uniform
 SSRF protection for all Google Play paths. Likewise, URL policy and byte limits
 do not verify APK manifests, ZIP CRC, publisher identity, or installability.
-RuStore and APKPure offer no API-checksum authenticity guarantee here. Huawei
+RuStore and APKPure offer no API-checksum authenticity guarantee here. RuStore
+now checks the bounded ZIP/CRC and binary manifest requested package/standalone
+base before publication, without expected API version/digest or signer trust.
+APKPure APK/XAPK and Google split/additional-file layouts do not receive this
+standalone-base validator; HTTPS is not publisher authentication. Huawei
 checks API size/SHA256 and additionally performs bounded ZIP/CRC and binary
 manifest package/versionCode/base validation before publication. These structural
 checks do not establish a trusted signing identity or certify installability.
+
+### Repository URL trust and APK validation limits
+
+CLI `repo=` is an explicit user-selected public endpoint, including nonstandard
+ports; the public-network policy is not a public-port probing sandbox. Services
+must fix/allowlist repository origins and options, rather than exposing arbitrary
+CLI `repo=` to untrusted callers. The APK Downloader web integration must enforce
+its own fixed repository policy. No remote probing claim is made here.
+
+The shared standalone APK validator deliberately limits validation to 60 seconds,
+2 GiB expanded data, 1000:1 member expansion, 4 MiB manifest, 32768 entries and
+16 MiB central directory; uncommon but legal APKs may be refused. Directory names
+are borrowed from the stable capped buffer (total raw names cannot exceed that
+16 MiB directory); there is no claimed measured RSS bound. Version comparison is
+Android longVersionCode (`versionCodeMajor << 32 | versionCode`), not low32-only.
+Huawei API low32-only semantics are not assumed; incompatible major-version
+metadata may be rejected. RuStore does not have an expected API version to compare.
+
+For legacy Android zipalign compatibility, only local-header extras may end in
+1–3 all-zero bytes at a complete TLV boundary. This is the sub-header remainder
+for ordinary 4-byte alignment, not a general malformed-extra fallback. Complete
+TLV headers, declared payload lengths, ZIP64/AES refusals and strict central
+extras are unchanged. Nonzero short tails and payload overruns remain errors;
+short-extra errors are identified as ZIP directory errors, not manifest errors.
 
 ## CSV and credentials
 

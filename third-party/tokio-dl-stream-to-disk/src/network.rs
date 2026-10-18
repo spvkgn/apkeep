@@ -36,6 +36,21 @@ pub fn validate_public_url(url: &reqwest::Url) -> Result<(), Error> {
     Ok(())
 }
 
+/// Public artifact URL policy for sources without authenticated content digests.
+pub fn validate_public_https_url(url: &reqwest::Url) -> Result<(), Error> {
+    if url.scheme() != "https" {
+        return Err(denied());
+    }
+    validate_public_url(url)
+}
+
+/// HTTPS-only initial requests and redirects, plus the public-address policy.
+pub fn public_https_client_builder() -> reqwest::ClientBuilder {
+    public_http_client_builder()
+        .https_only(true)
+        .redirect(https_redirect_policy())
+}
+
 fn v4_in(ip: Ipv4Addr, network: [u8; 4], bits: u32) -> bool {
     let mask = u32::MAX << (32 - bits);
     u32::from(ip) & mask == u32::from(Ipv4Addr::from(network)) & mask
@@ -123,10 +138,20 @@ impl Resolve for PublicResolver {
 }
 
 fn redirect_policy() -> reqwest::redirect::Policy {
-    reqwest::redirect::Policy::custom(|attempt| {
+    redirect_policy_for(false)
+}
+
+pub(super) fn https_redirect_policy() -> reqwest::redirect::Policy {
+    redirect_policy_for(true)
+}
+
+fn redirect_policy_for(https_only: bool) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
         if attempt.previous().len() > 10 {
             attempt.error("public HTTP redirect limit exceeded")
-        } else if validate_public_url(attempt.url()).is_err() {
+        } else if (https_only && attempt.url().scheme() != "https")
+            || validate_public_url(attempt.url()).is_err()
+        {
             attempt.error(denied())
         } else {
             attempt.follow()

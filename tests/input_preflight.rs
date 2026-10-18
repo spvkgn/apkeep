@@ -1,4 +1,45 @@
 //! Offline child-process preflight: proxy is a closed loopback port, never a store.
+
+#[cfg(unix)]
+#[test]
+fn untrusted_output_directory_explains_owner_and_write_policy() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o775)).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_apkeep"))
+        .args(["-d", "ru-store", "-a", "com.example.app"])
+        .arg(dir.path())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("owned by the current user") && stderr.contains("not group/world-writable"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn all_cli_sources_reject_excess_parallelism_before_credentials() {
+    for source in [
+        "apk-pure",
+        "f-droid",
+        "google-play",
+        "ru-store",
+        "huawei-app-gallery",
+    ] {
+        let out = run(
+            &["-d", source, "-a", "com.example.app", "-r", "17", "."],
+            None,
+        );
+        assert!(!out.status.success());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("between 1 and 16"), "{source}: {stderr}");
+        assert!(!stderr.contains("Email") && !stderr.contains("terminal"));
+    }
+}
+
 use std::fs;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};

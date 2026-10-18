@@ -90,13 +90,13 @@ to stderr; progress and successful-download messages go to stdout. Invalid
 option values, untrusted version strings, response bodies and signed download
 URLs are not printed.
 
-For downloads, `-r/--parallel` must be greater than zero (for every source), and
+For downloads, `-r/--parallel` must be between 1 and 16 inclusive (default 4, for every source), and
 is rejected before starting downloads or Google authentication. RuStore also
 validates this in its download helper. `-l` remains an offline explanation of the
 latest-only limitation with a failure status; it validates package IDs but does
 not validate unused download options.
 
-Package names must consist of dot-separated nonempty ASCII identifiers, each
+Package names must contain at least one dot and consist of dot-separated nonempty ASCII identifiers, each
 starting with a letter or `_`, followed by letters, digits or `_`, at most 240
 bytes total (including separators, leaving room for `.apk`). Path separators,
 query/fragment syntax and control characters are rejected before RuStore network
@@ -131,18 +131,20 @@ environment variables. The existing API endpoints, device/header precedence,
 latest-only and split-APK rules are unchanged.
 
 Existing regular files are preserved **without revalidation and with a failure
-status**. A successful new HTTP transfer is not an APK signature, ZIP/manifest,
-or API-checksum verification; use a
-fresh output directory and independently verify downloaded APKs when required.
+status**. Before publication, new downloads pass bounded ZIP/CRC and binary
+manifest validation for the requested package and a standalone base APK. No
+expected API version/digest or signer authentication is available here. Use a
+fresh output directory and independently verify publisher signatures as required.
 
 
-Production metadata and artifact requests enforce the shared public-network-only
+Production metadata and artifact requests require HTTPS, including every redirect, and enforce the shared public-network-only
 policy (including DNS and redirects): no URL credentials, private, loopback,
 link-local or reserved addresses; environment proxies are not used. There is no
 CLI/environment bypass. See [RELIABILITY.md](RELIABILITY.md#public-http-boundary).
-OUTPATH and its ancestors must be trusted and not concurrently replaced by other
-users: path-based no-clobber publication is not a dirfd/openat defense against a
-hostile local directory owner.
+OUTPATH must be current-user-owned, non-group/world-writable and accessed
+without symlink/traversal components. Directory descriptors pin publication and
+cleanup across ancestor renames; this does not isolate root or malicious same-UID
+code/directory owners. See the Linux boundary in RELIABILITY.md.
 
 ## Split APK limitation
 
@@ -153,4 +155,4 @@ download URL, apkeep rejects the entire result with a "split APKs are not
 supported" diagnostic; it never downloads only the first member and presents it
 as a complete app. This safeguard also applies when `without_splits=true`, in
 case the server returns multiple URLs despite that preference. A response with
-exactly one valid HTTP(S) URL continues through the existing APK downloader.
+exactly one valid public HTTPS URL continues through the existing APK downloader.

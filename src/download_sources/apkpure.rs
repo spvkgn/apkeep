@@ -265,6 +265,9 @@ async fn download_apps_using(
         results::batch_error(&apps, Reason::InvalidInput);
         return failure("the dangers of this source must be explicitly acknowledged: https://github.com/EFForg/apkeep/blob/master/USAGE-apkpure.md");
     }
+    if !super::check_parallel(&apps, parallel) {
+        return false;
+    }
     if apps.is_empty() || parallel == 0 {
         results::batch_error(&apps, Reason::InvalidInput);
         return failure("a nonempty batch and positive parallelism are required");
@@ -303,7 +306,7 @@ async fn download_apps_using(
                                 return failure(message);
                             }
                         };
-                        mp.suspend(|| println!("Downloading {name} from APKPure..."));
+                        mp.suspend(|| cli_println!("Downloading {name} from APKPure..."));
                         if sleep_duration > 0 {
                             sleep(Duration::from_millis(sleep_duration)).await;
                         }
@@ -417,7 +420,7 @@ async fn download_from_response_pinned(
             .map(|length| progress_wrapper(Rc::clone(&mp))(fname.clone(), length));
         match timeout(Duration::from_secs(300), dl.download(&cb)).await {
             Ok(Ok(())) => {
-                mp.suspend(|| println!("{app_string} downloaded successfully!"));
+                mp.suspend(|| cli_println!("{app_string} downloaded successfully!"));
                 results::complete();
                 return true;
             }
@@ -523,7 +526,7 @@ async fn list_versions_using(
         match listing.expect("listing outcome assigned") {
             Ok(versions) => {
                 if output_format.is_plaintext() {
-                    println!(
+                    cli_println!(
                         "Versions available for {app_id} on APKPure:\n| {}",
                         versions.join(", ")
                     );
@@ -541,7 +544,7 @@ async fn list_versions_using(
         }
     }
     if output_format.is_json() {
-        println!("{}", json!({"source": "APKPure", "apps": json_apps}));
+        cli_println!("{}", json!({"source": "APKPure", "apps": json_apps}));
     }
     success
 }
