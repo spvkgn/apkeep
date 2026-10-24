@@ -19,18 +19,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: aarch64-unknown-linux-musl
-            image: aarch64-musl
-          - target: arm-unknown-linux-musleabi
-            image: arm-musleabi
-          - target: arm-unknown-linux-musleabihf
-            image: arm-musleabihf
-          - target: armv7-unknown-linux-musleabi
-            image: armv7-musleabi
-          - target: armv7-unknown-linux-musleabihf
-            image: armv7-musleabihf
-          - target: i686-unknown-linux-musl
-            image: i686-musl
+          # - target: aarch64-unknown-linux-musl
+          #   image: aarch64-musl
+          # - target: arm-unknown-linux-musleabi
+          #   image: arm-musleabi
+          # - target: arm-unknown-linux-musleabihf
+          #   image: arm-musleabihf
+          # - target: armv7-unknown-linux-musleabi
+          #   image: armv7-musleabi
+          # - target: armv7-unknown-linux-musleabihf
+          #   image: armv7-musleabihf
+          # - target: i686-unknown-linux-musl
+          #   image: i686-musl
           - target: x86_64-unknown-linux-musl
             image: x86_64-musl
     container:
@@ -79,6 +79,7 @@ jobs:
           path: apkeep-*.tar.gz
 
       - name: Upload assets to release
+        if: false
         uses: softprops/action-gh-release@v3
         with:
           fail_on_unmatched_files: true
