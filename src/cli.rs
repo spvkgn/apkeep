@@ -1,10 +1,12 @@
-use clap::{value_parser, Command, Arg, ArgAction, ValueEnum, {builder::EnumValueParser}};
+use clap::{builder::EnumValueParser, value_parser, Arg, ArgAction, Command, ValueEnum};
 
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
 pub enum DownloadSource {
     APKPure,
     GooglePlay,
     FDroid,
+    HuaweiAppGallery,
+    RuStore,
 }
 
 impl std::fmt::Display for DownloadSource {
@@ -28,6 +30,10 @@ impl std::str::FromStr for DownloadSource {
         Err(format!("Invalid variant: {}", s))
     }
 }
+
+#[cfg(test)]
+#[path = "cli_tests.rs"]
+mod tests;
 
 pub fn app() -> Command {
     Command::new("apkeep")
@@ -148,7 +154,7 @@ pub fn app() -> Command {
         )
         .arg(
             Arg::new("parallel")
-                .help("The number of parallel APK fetches to run at a time")
+                .help("The number of parallel APK fetches to run at a time (1-16)")
                 .short('r')
                 .long("parallel")
                 .action(ArgAction::Set)
@@ -157,8 +163,16 @@ pub fn app() -> Command {
                 .required(false),
         )
         .arg(
+            Arg::new("report_json")
+                .long("report-json")
+                .value_name("path")
+                .help("Write a bounded per-input JSON report (no overwrite)")
+                .conflicts_with("google_oauth_token")
+                .action(ArgAction::Set),
+        )
+        .arg(
             Arg::new("OUTPATH")
-                .help("Path to store output files")
+                .help("Path to store output files (owned by the current user, not group/world-writable; no symlinks)")
                 .action(ArgAction::Set)
                 .index(1)
                 .required_unless_present_any(["list_versions", "google_oauth_token"]),

@@ -3,7 +3,7 @@ Downloads APKs from various sources
 Usage: apkeep <-a app_id[@version] | -c csv [-f field] [-v version_field]> [-d download_source] [-r parallel] OUTPATH
 
 Arguments:
-  [OUTPATH]  Path to store output files
+  [OUTPATH]  Path to store output files (owned by the current user, not group/world-writable; no symlinks)
 
 Options:
   -a, --app <app>
@@ -17,7 +17,7 @@ Options:
   -l, --list-versions
           List the versions available
   -d, --download-source <download_source>
-          Where to download the APKs from [default: google-play] [possible values: apk-pure, google-play, f-droid]
+          Where to download the APKs from [default: google-play] [possible values: apk-pure, google-play, f-droid, huawei-app-gallery, ru-store]
   -o, --options <options>
           A comma-separated list of additional options to pass to the download source
   -i, --ini <ini>
@@ -35,7 +35,9 @@ Options:
   -s, --sleep-duration <sleep_duration>
           Sleep duration (in ms) before download requests [default: 0]
   -r, --parallel <parallel>
-          The number of parallel APK fetches to run at a time [default: 4]
+          The number of parallel APK fetches to run at a time (1-16) [default: 4]
+      --report-json <path>
+          Write a bounded per-input JSON report (no overwrite)
   -h, --help
           Print help
   -V, --version

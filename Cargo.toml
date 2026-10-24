@@ -18,7 +18,7 @@ gpapi = "6"
 tokio-dl-stream-to-disk = { version = "1", features = ["sha256sum"] }
 tempfile = "3"
 dirs = "6"
-zip = "8"
+zip = "9.0.3"
 cryptographic-message-syntax = "0.28"
 ring = "0.17"
 x509-certificate = "0.25"
@@ -31,6 +31,17 @@ hex = "0.4"
 configparser = "3"
 serde = { version = "1", features = ["derive"] }
 indicatif = "0.18"
+csv = "1.4"
+rpassword = "7.4"
+
+[target.'cfg(unix)'.dependencies]
+# Platform-defined O_NONBLOCK closes the custom-device FIFO substitution race.
+libc = "0.2"
 
 [build-dependencies]
 clap = { version = "4", features = ["derive"] }
+
+[patch.crates-io]
+# Preserve original API/licenses; see each third-party package's PATCHES.md.
+rpassword = { path = "third-party/rpassword" }
+tokio-dl-stream-to-disk = { path = "third-party/tokio-dl-stream-to-disk" }

@@ -29,10 +29,10 @@ apkeep -a com.instagram.android -e 'someone@gmail.com' -t some_aas_token .
 If you have an AUTH token from a token dispenser (e.g., Aurora Store's dispenser), you can use it directly with the `--auth-token` flag:
 
 ```shell
-apkeep -a com.instagram.android -d google-play -e 'dispenser_email@gmail.com' --auth-token 'ya29.a0...' --accept-tos .
+apkeep -a com.instagram.android -d google-play -e 'dispenser_email@gmail.com' --auth-token 'ya29.a0...' .
 ```
 
-AUTH tokens typically start with `ya29.`. The `--accept-tos` flag is recommended for first-time use with a new account to automatically accept Google Play's Terms of Service.
+AUTH tokens typically start with `ya29.`. Terms of Service are never accepted implicitly. If Google requires acceptance, read the [Google Play terms](https://play.google.com/about/play-terms/index.html) and pass `--accept-tos` only if you intentionally agree.
 
 ## Device Configuration
 
@@ -93,3 +93,49 @@ Optionally, the path to this `ini` file can be specified:
 ```shell
 apkeep -a com.instagram.android -d google-play -i ~/path/to/some.ini .
 ```
+
+## Device-constructor failures
+
+Custom device properties are read from a regular file into a private snapshot,
+limited to 256 KiB, before gpapi construction. Unknown built-in devices, missing
+or malformed custom files, missing profiles and typed-field parsing failures
+produce a controlled, redacted device-configuration error before authentication
+or other network work (including OAuth-to-AAS exchange). gpapi 6.1.0 exposes only
+panicking constructors; a narrow synchronous unwind boundary suppresses only
+those constructor panic diagnostics on the current thread, forwarding unrelated
+panics to the previous hook. This is not a claim that all later gpapi internals
+are panic-free or use the shared public-network HTTP policy.
+
+## Failure handling and output safety
+
+- A batch succeeds only if every requested app succeeds. Failed apps, unsupported
+  `app@version` requests, invalid package IDs and existing destinations produce a
+  failure exit status; other valid apps in the batch are still processed.
+- Google Play version listing is unsupported and returns a failure exit status.
+  Only the latest version can be requested. Package IDs must be dot-separated
+  ASCII identifiers (letters first in each component, then letters, digits or
+  underscores), with a maximum length of 255 bytes.
+- Login, explicit Terms of Service acceptance and OAuth-to-AAS token exchange each
+  have a 120-second deadline. Each complete app-download attempt, including its
+  metadata and split/OBB transfers, has a 600-second deadline. Transient download
+  errors and timeouts get at most three attempts total; permanent app, credentials
+  or local destination errors are not retried. These limits do not include an
+  explicitly configured inter-download sleep or time spent waiting for a batch slot.
+- Every app attempt uses a fresh staging directory inside `OUTPATH` (owner-only
+  access on Unix). API errors, timeouts and cancelled futures clean that staging
+  directory instead of exporting a base APK, incomplete splits or OBB files.
+  Files are published only after the entire API download succeeds and its output
+  has been checked for a nonempty base APK and regular expected artifacts.
+- Output layouts are unchanged: a standalone APK is `OUTPATH/package.apk`;
+  split APKs, expansion files or dex metadata use `OUTPATH/package/` as needed.
+  Existing files, directories and symlinks are never replaced. Publishing uses
+  same-filesystem hard links, so the output filesystem must support them. A split
+  directory is reserved exclusively and local publication errors roll back links
+  created by this invocation; directory publication is not a single atomic rename.
+- Authentication and download failures use redacted messages on stderr, not raw
+  API errors or signed download URLs. Successful OAuth-to-AAS exchange deliberately
+  prints **only the resulting token** on stdout; failure prints no token. Treat
+  captured stdout as a secret and do not attach it to bug reports.
+
+The caller's reliability tests use an offline backend and local fixture files.
+They do not authenticate to Google, download real apps, or accept real terms.

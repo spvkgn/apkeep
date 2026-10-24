@@ -1,0 +1,43 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust and clippy
+        run: rustup toolchain install stable --profile minimal --component clippy
+      - name: Install offline APK fixture prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends aapt libandroid-23-java apksigner default-jdk-headless
+      - name: Test every target
+        run: cargo +stable test --locked --all-targets
+      - name: Lint every target
+        run: cargo +stable clippy --locked --all-targets
+      - name: Build documentation
+        run: cargo +stable doc --locked --no-deps
+      - name: Shared downloader unit regressions
+        run: |
+          cargo test --locked -p tokio-dl-stream-to-disk --lib
+      - name: Release-script mocks and real credential PTY (no remote SSH/login)
+        env:
+          APKEEP_TEST_BINARY: target/debug/apkeep
+        run: python3 -B -m unittest discover -s tests
+      - name: Validate release script syntax
+        run: bash -n build-remote.sh
+      - name: Check generated help is committed
+        run: git diff --exit-code -- USAGE

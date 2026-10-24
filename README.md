@@ -68,6 +68,26 @@ repositories, refer to the [`USAGE-fdroid.md`](USAGE-fdroid.md) document.
 
 You can also download from APKPure, but this should be used *only* for research purposes. Please see the [`USAGE-apkpure.md`](USAGE-apkpure.md) document.
 
+To download the APK offered by Huawei AppGallery for an explicitly chosen region:
+
+```shell
+apkeep -a com.icbc -d huawei-app-gallery -o region=CN .
+```
+
+The compatible default region is `IE`; there is no automatic region fallback. Only the
+latest APK offered to the configured client profile is available, not historical versions
+or necessarily the newest public release. See [`USAGE-huawei-app-gallery.md`](USAGE-huawei-app-gallery.md)
+for regional availability, integrity checks, and error handling.
+
+Or, to download from RuStore:
+
+```shell
+apkeep -a com.vk.calls -d ru-store .
+```
+
+For RuStore device/client options and its latest-only and split APK limitations,
+refer to [`USAGE-rustore.md`](USAGE-rustore.md).
+
 To download a specific version of an APK (possible for APKPure or F-Droid), use the `@version`
 convention:
 
@@ -105,9 +125,12 @@ You can use this tool to download from a few distinct sources.
 
 * The Google Play Store (`-d google-play`), given an email address and AAS token
 * APKPure (`-d apk-pure`), a third-party site hosting APKs available on the Play Store
+* Huawei AppGallery (`-d huawei-app-gallery`), with explicit regional selection and
+  API-size/SHA256-checked downloads; see [`USAGE-huawei-app-gallery.md`](USAGE-huawei-app-gallery.md)
 * F-Droid (`-d f-droid`), a repository for free and open-source Android apps. `apkeep`
-verifies that these APKs are signed by the F-Droid maintainers, and alerts the user if an APK
-was downloaded but could not be verified
+authenticates the repository index and checks each APK against its indexed SHA256
+before publication; an APK that fails verification is not published
+* RuStore (`-d ru-store`), a Russian app store platform
 
 ## Usage Note
 

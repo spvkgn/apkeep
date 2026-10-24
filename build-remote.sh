@@ -1,113 +1,192 @@
 #!/bin/bash
-# Build `apkeep` for release from a fresh Debian 13 x64 install
+# Build one native Linux target from an exact, clean, local Git commit.
+set -euo pipefail
+exec python3 - "$@" <<'PYTHON'
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import posixpath
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
 
-ssh -o 'StrictHostKeyChecking no' apkeep-compiler << 'EOF'
-sudo dpkg --add-architecture armhf
-sudo dpkg --add-architecture i386
-sudo dpkg --add-architecture arm64
-sudo apt-get -y update
-sudo apt-get -y dist-upgrade
-sudo apt-get -y install git build-essential libssl-dev pkg-config unzip gcc-multilib
-sudo apt-get -y install libc6-armhf-cross libc6-dev-armhf-cross gcc-arm-linux-gnueabihf libssl-dev:armhf
-sudo apt-get -y install libc6-i386-cross libc6-dev-i386-cross gcc-i686-linux-gnu libssl-dev:i386
-sudo apt-get -y install libc6-arm64-cross libc6-dev-arm64-cross gcc-aarch64-linux-gnu libssl-dev:arm64
-sudo apt-get -y install clang-19 llvm-19 lld-19
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs > /tmp/get_rust.sh
-bash /tmp/get_rust.sh -y
-source ~/.cargo/env
-rustup target install armv7-unknown-linux-gnueabihf i686-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android x86_64-pc-windows-msvc
+HOST = "apkeep-compiler"
+# A commit ID must identify its stored object, not a local refs/replace view.
+os.environ["GIT_NO_REPLACE_OBJECTS"] = "1"
+REMOTE_SCRIPT = r'''set -euo pipefail
+umask 077
+work=$1
+commit=$2
+target=$3
+source_sha256=$4
+cd "$work"
+printf '%s  source.tar\n' "$source_sha256" | sha256sum --check --status
+mkdir source build
+tar -xf source.tar -C source
+cd source
+python3 - "$target" <<'CHECK_HOST'
+import subprocess, sys
+host = [line[6:] for line in subprocess.check_output(["rustc", "-vV"], text=True).splitlines() if line.startswith("host: ")]
+if host != [sys.argv[1]]:
+    sys.exit("Unsupported cross target: requested target must equal provisioned rustc host")
+CHECK_HOST
+export CARGO_TARGET_DIR="$work/build"
+cargo build --release --locked --target "$target"
+test -s "$CARGO_TARGET_DIR/$target/release/apkeep"
+cp "$CARGO_TARGET_DIR/$target/release/apkeep" "$work/apkeep"
+python3 - "$work" "$commit" "$target" "$source_sha256" <<'MANIFEST'
+import hashlib, json, pathlib, sys
+work = pathlib.Path(sys.argv[1])
+manifest = {"source_commit": sys.argv[2], "target": sys.argv[3],
+            "source_sha256": sys.argv[4],
+            "artifact_sha256": hashlib.sha256((work / "apkeep").read_bytes()).hexdigest()}
+(work / "manifest.json").write_text(json.dumps(manifest, sort_keys=True) + "\n")
+MANIFEST
+'''
 
-git clone https://www.github.com/EFForg/apkeep.git
-cd apkeep
-export PKG_CONFIG_ALLOW_CROSS="true"
-cargo build --release
-export PKG_CONFIG_PATH="/usr/lib/arm-linux-gnueabihf/pkgconfig"
-cargo build --release --target=armv7-unknown-linux-gnueabihf
-export PKG_CONFIG_PATH="/usr/lib/i686-linux-gnu-gcc/pkgconfig"
-cargo build --release --target=i686-unknown-linux-gnu
-export PKG_CONFIG_PATH="/usr/lib/aarch-linux-gnu-gcc/pkgconfig"
-cargo build --release --target=aarch64-unknown-linux-gnu
 
-cd ~
-wget https://github.com/openssl/openssl/releases/download/openssl-3.6.2/openssl-3.6.2.tar.gz
-tar -zxvf openssl-3.6.2.tar.gz
-cd openssl-3.6.2
-wget https://raw.githubusercontent.com/EFForg/apkeep-files/main/Configurations-15-android.conf.patch
-patch -u Configurations/15-android.conf Configurations-15-android.conf.patch
-export OPENSSL_DIR=$PWD
-export OPENSSL_LIB_DIR=$PWD
+def run(args, **kwargs):
+    return subprocess.run(args, check=True, **kwargs)
 
-cd ~
-wget https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
-unzip android-ndk-r27d-linux.zip
-cd android-ndk-r27d
-export ANDROID_NDK_ROOT="$PWD"
-export OLDPATH="$PATH"
-export NEWPATH="$PWD/toolchains/llvm/prebuilt/linux-x86_64/bin"
-export PATH="$NEWPATH:$PATH"
-export AR="llvm-ar"
-cd $NEWPATH
-ln -s armv7a-linux-androideabi27-clang arm-linux-androideabi-clang
-ln -s i686-linux-android27-clang i686-linux-android-clang
 
-cd $OPENSSL_DIR
-./Configure android-arm64 -D__ANDROID_MIN_SDK_VERSION__=27
-make
-cd ../apkeep
-cargo build --release --target=aarch64-linux-android
+def git(*args):
+    return subprocess.check_output(["git", *args])
 
-cd $OPENSSL_DIR
-make clean
-./Configure android-arm -D__ANDROID_MIN_SDK_VERSION__=27
-make
-cd ../apkeep
-cargo build --release --target=armv7-linux-androideabi
 
-cd $OPENSSL_DIR
-make clean
-./Configure android-x86 -D__ANDROID_MIN_SDK_VERSION__=27
-make
-cd ../apkeep
-cargo build --release --target=i686-linux-android
+def verify_archive(archive_path, commit):
+    """Fail closed if archive attributes would omit/substitute committed bytes."""
+    expected = {}
+    for entry in git("ls-tree", "-r", "-z", commit).split(b"\0"):
+        if not entry:
+            continue
+        metadata, name = entry.split(b"\t", 1)
+        mode, kind, oid = metadata.split()
+        if kind != b"blob" or mode not in (b"100644", b"100755", b"120000"):
+            raise ValueError("Submodules/special Git entries are unsupported")
+        expected[os.fsdecode(name)] = (mode, oid.decode())
+    for required in ("Cargo.toml", "Cargo.lock"):
+        if required not in expected:
+            raise ValueError("Commit must include " + required)
+    found = set()
+    with tarfile.open(archive_path) as archive:
+        for member in archive:
+            if member.isdir():
+                continue
+            if member.name not in expected or member.name in found:
+                raise ValueError("Unexpected/duplicate archive entry")
+            mode, oid = expected[member.name]
+            if mode == b"120000" and member.issym():
+                target_path = posixpath.normpath(posixpath.join(posixpath.dirname(member.name), member.linkname))
+                if (posixpath.isabs(member.linkname) or ".." in member.linkname.split("/")
+                        or target_path == ".." or target_path.startswith("../")):
+                    raise ValueError("Source symlink may escape committed tree")
+                data = os.fsencode(member.linkname)
+            elif mode != b"120000" and member.isfile():
+                data = archive.extractfile(member).read()
+                if bool(member.mode & 0o111) != (mode == b"100755"):
+                    raise ValueError("Archive executable mode mismatch")
+            else:
+                raise ValueError("Archive file type mismatch")
+            digest = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+            if digest != oid:
+                raise ValueError("Archive differs from committed bytes (export-subst?)")
+            found.add(member.name)
+    if found != set(expected):
+        raise ValueError("Archive omits committed files (export-ignore?)")
 
-cd $OPENSSL_DIR
-make clean
-./Configure android-x86_64 -D__ANDROID_MIN_SDK_VERSION__=27
-make
-cd ../apkeep
-cargo build --release --target=x86_64-linux-android
 
-export PATH="$OLDPATH"
-unset AR
+def main():
+    parser = argparse.ArgumentParser(description=__doc__ or "Exact-source native Linux remote build (no provisioning/publishing)")
+    parser.add_argument("--commit", help="full 40-hex local commit; default HEAD")
+    parser.add_argument("--target", required=True, help="explicit native Linux Rust target; cross builds refused")
+    parser.add_argument("--known-hosts", required=True, help="existing independently pinned OpenSSH known_hosts file")
+    parser.add_argument("--output-dir", required=True, help="new private output directory; must not exist")
+    args = parser.parse_args()
+    if not re.fullmatch(r"(?:x86_64|i686|aarch64|armv7)-unknown-linux-(?:gnu|gnueabihf|musl|musleabihf)", args.target):
+        raise ValueError("Unsupported target: only native Linux builds are supported")
+    known_hosts = Path(args.known_hosts).resolve(strict=True)
+    # OpenSSH expands tokens/environment variables even in -o path values.
+    # Accept one literal absolute path, never a list or expansion expression.
+    if not re.fullmatch(r"/[A-Za-z0-9_./-]+", str(known_hosts)):
+        raise ValueError("known_hosts path must be literal: only letters/digits, / . _ -")
+    if not known_hosts.is_file() or known_hosts.stat().st_size == 0:
+        raise ValueError("A nonempty pinned known_hosts file is required")
+    output = Path(args.output_dir).absolute()
+    if os.path.lexists(output):
+        raise ValueError("Output directory must not already exist")
+    # Ignore untracked files: they are never included by Git archive. Any tracked
+    # staged/unstaged change, including in vendored dependencies, blocks SSH.
+    if any(entry[:1] != b"H" for entry in git("ls-files", "-v", "-z").split(b"\0") if entry):
+        raise ValueError("Index flags could hide dirty files; clear assume-unchanged/skip-worktree first")
+    if git("status", "--porcelain", "--untracked-files=no"):
+        raise ValueError("Tracked checkout is dirty; commit/review changes before building")
+    commit = args.commit or git("rev-parse", "HEAD").decode().strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", commit):
+        raise ValueError("Commit must be a full 40-hex commit ID")
+    commit = commit.lower()
+    if git("cat-file", "-t", commit).strip() != b"commit":
+        raise ValueError("Requested object is not a commit")
+    options = ["-F", "/dev/null", "-o", "StrictHostKeyChecking=yes", "-o", "BatchMode=yes",
+               "-o", "UserKnownHostsFile=" + str(known_hosts), "-o", "GlobalKnownHostsFile=/dev/null",
+               "-o", "VerifyHostKeyDNS=no", "-o", "UpdateHostKeys=no", "-o", "ConnectTimeout=15"]
+    remote = None
+    created_output = False
+    success = False
+    try:
+        # mkdir is exclusive even for symlinks/dangling symlinks; never overwrite.
+        output.mkdir(mode=0o700)
+        created_output = True
+        with tempfile.TemporaryDirectory(prefix=".staging-", dir=output) as staging_name:
+            staging = Path(staging_name)
+            archive_path = staging / "source.tar"
+            with archive_path.open("xb") as stream:
+                run(["git", "archive", "--format=tar", commit], stdout=stream)
+            verify_archive(archive_path, commit)
+            source_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+            response = run(["ssh", *options, HOST, "mktemp -d /tmp/apkeep-release.XXXXXXXXXXXX"],
+                           stdout=subprocess.PIPE, text=True).stdout.strip()
+            # Only this per-run directory may ever become an rm/scp argument.
+            if not re.fullmatch(r"/tmp/apkeep-release\.[A-Za-z0-9]{6,64}", response):
+                raise ValueError("Builder returned an invalid temporary directory")
+            remote = response
+            run(["scp", *options, str(archive_path), HOST + ":" + remote + "/source.tar"])
+            command = shlex.join(["bash", "-s", "--", remote, commit, args.target, source_sha256])
+            run(["ssh", *options, HOST, command], input=REMOTE_SCRIPT, text=True)
+            for name in ("manifest.json", "apkeep"):
+                run(["scp", *options, HOST + ":" + remote + "/" + name, str(staging / name)])
+            manifest = json.loads((staging / "manifest.json").read_text())
+            artifact = staging / "apkeep"
+            if (not artifact.is_file() or artifact.is_symlink() or artifact.stat().st_size == 0
+                    or manifest.get("source_commit") != commit
+                    or manifest.get("source_sha256") != source_sha256
+                    or manifest.get("target") != args.target
+                    or manifest.get("artifact_sha256") != hashlib.sha256(artifact.read_bytes()).hexdigest()):
+                raise ValueError("Downloaded artifact/manifest does not match source, target or checksum")
+            # Cleanup must succeed before any verified artifact is exposed.
+            run(["ssh", *options, HOST, shlex.join(["rm", "-rf", "--", remote])])
+            remote = None
+            os.link(artifact, output / ("apkeep-" + args.target))
+            os.link(staging / "manifest.json", output / "manifest.json")
+        success = True
+        print(output)
+    finally:
+        if remote is not None:
+            cleanup = subprocess.run(["ssh", *options, HOST, shlex.join(["rm", "-rf", "--", remote])])
+            if cleanup.returncode:
+                print("WARNING: remote cleanup failed; remove " + remote + " on " + HOST, file=sys.stderr)
+        if created_output and not success:
+            shutil.rmtree(output)
 
-sudo ln -s clang-19 /usr/bin/clang && sudo ln -s clang /usr/bin/clang++ && sudo ln -s lld-19 /usr/bin/ld.lld
-sudo ln -s clang-19 /usr/bin/clang-cl && sudo ln -s llvm-ar-19 /usr/bin/llvm-lib && sudo ln -s lld-link-19 /usr/bin/lld-link && sudo ln -s lld-link /usr/bin/link.exe
 
-cd ~
-XWIN_VERSION="0.9.0"
-XWIN_PREFIX="xwin-$XWIN_VERSION-x86_64-unknown-linux-musl"
-curl --fail -L https://github.com/Jake-Shadle/xwin/releases/download/$XWIN_VERSION/$XWIN_PREFIX.tar.gz | tar -xzv -C ~/.cargo/bin --strip-components=1 $XWIN_PREFIX/xwin
-cd ~ && mkdir xwin
-xwin --accept-license splat --output xwin
-
-export CC_x86_64_pc_windows_msvc="clang-cl"
-export CXX_x86_64_pc_windows_msvc="clang-cl"
-export AR_x86_64_pc_windows_msvc="llvm-lib"
-export CL_FLAGS="-Wno-unused-command-line-argument -fuse-ld=lld-link /imsvc$HOME/xwin/crt/include /imsvc$HOME/xwin/sdk/include/ucrt /imsvc$HOME/xwin/sdk/include/um /imsvc$HOME/xwin/sdk/include/shared"
-export RUSTFLAGS="-Lnative=$HOME/xwin/crt/lib/x86_64 -Lnative=$HOME/xwin/sdk/lib/um/x86_64 -Lnative=$HOME/xwin/sdk/lib/ucrt/x86_64"
-export CFLAGS_x86_64_pc_windows_msvc="$CL_FLAGS"
-export CXXFLAGS_x86_64_pc_windows_msvc="$CL_FLAGS"
-
-cd ~/apkeep
-cargo build --release --target x86_64-pc-windows-msvc
-EOF
-
-scp apkeep-compiler:~/apkeep/target/release/apkeep ./apkeep-x86_64-unknown-linux-gnu
-scp apkeep-compiler:~/apkeep/target/armv7-unknown-linux-gnueabihf/release/apkeep ./apkeep-armv7-unknown-linux-gnueabihf
-scp apkeep-compiler:~/apkeep/target/i686-unknown-linux-gnu/release/apkeep ./apkeep-i686-unknown-linux-gnu
-scp apkeep-compiler:~/apkeep/target/aarch64-unknown-linux-gnu/release/apkeep ./apkeep-aarch64-unknown-linux-gnu
-scp apkeep-compiler:~/apkeep/target/aarch64-linux-android/release/apkeep ./apkeep-aarch64-linux-android
-scp apkeep-compiler:~/apkeep/target/armv7-linux-androideabi/release/apkeep ./apkeep-armv7-linux-androideabi
-scp apkeep-compiler:~/apkeep/target/i686-linux-android/release/apkeep ./apkeep-i686-linux-android
-scp apkeep-compiler:~/apkeep/target/x86_64-linux-android/release/apkeep ./apkeep-x86_64-linux-android
-scp apkeep-compiler:~/apkeep/target/x86_64-pc-windows-msvc/release/apkeep.exe ./apkeep-x86_64-pc-windows-msvc.exe
+try:
+    main()
+except (OSError, ValueError, subprocess.CalledProcessError, tarfile.TarError) as error:
+    print("Release build refused/failed: " + str(error), file=sys.stderr)
+    sys.exit(1)
+PYTHON

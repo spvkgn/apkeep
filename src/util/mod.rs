@@ -24,4 +24,6 @@ impl OutputFormat {
     }
 }
 
-
+#[cfg(test)]
+#[path = "format_tests.rs"]
+mod tests;
